@@ -1,0 +1,157 @@
+# Automated Data Cleaning & EDA 
+
+DELIMITER $$
+DROP PROCEDURE IF EXISTS Copy_and_Clean_Data;
+CREATE PROCEDURE Copy_and_Clean_Data()
+BEGIN
+
+#Creating table
+	CREATE TABLE IF NOT EXISTS `worldlifexpectancy_Cleaned` (
+	  `Country` varchar(1024) DEFAULT NULL,
+	  `Year` bigint DEFAULT NULL,
+	  `Status` varchar(1024) DEFAULT NULL,
+	  `Lifeexpectancy` varchar(1024) DEFAULT NULL,
+	  `AdultMortality` bigint DEFAULT NULL,
+	  `infantdeaths` bigint DEFAULT NULL,
+	  `percentageexpenditure` double DEFAULT NULL,
+	  `Measles` bigint DEFAULT NULL,
+	  `BMI` double DEFAULT NULL,
+	  `under-fivedeaths` bigint DEFAULT NULL,
+	  `Polio` bigint DEFAULT NULL,
+	  `Diphtheria` bigint DEFAULT NULL,
+	  `HIVAIDS` double DEFAULT NULL,
+	  `GDP` bigint DEFAULT NULL,
+	  `thinness1-19years` double DEFAULT NULL,
+	  `thinness5-9years` double DEFAULT NULL,
+	  `Schooling` double DEFAULT NULL,
+	  `Row_ID` bigint DEFAULT NULL,
+	  `TimeSpamp` TIMESTAMP DEFAULT NULL
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+    #Inserting data
+    INSERT INTO worldlifexpectancy_Cleaned
+    SELECT *, CURRENT_TIMESTAMP
+    FROM worldlifexpectancy_STAGING;
+    
+## DELETING DUPLICATES
+	DELETE FROM worldlifexpectancy_Cleaned
+	WHERE Row_ID IN
+	(SELECT Row_ID
+	FROM
+	(SELECT Row_ID, concat(Country, Year), 
+	ROW_NUMBER() OVER(PARTITION BY concat(Country, Year),`TimeStamp` 
+    ORDER BY concat(Country, Year),`TimeStamp`) as rn
+	FROM World_life_expectancy.worldlifexpectancy_Cleaned) as tt
+	WHERE rn>1);
+
+# Populating missing values
+	UPDATE worldlifexpectancy_Cleaned
+	SET Status= NULL
+	WHERE Status='';
+
+	WITH CTE_Developing_count AS (SELECT DISTINCT (COUNTRY)
+	FROM worldlifexpectancy_Cleaned
+	WHERE Status='Developing')
+
+	UPDATE worldlifexpectancy_Cleaned
+	SET Status = 'Developing'
+	WHERE Status IS NULL
+	AND COUNTRY IN (SELECT COUNTRY FROM CTE_Developing_count);
+
+	WITH CTE_Developing_count AS (SELECT DISTINCT (COUNTRY)
+	FROM worldlifexpectancy_Cleaned
+	WHERE Status='Developed')
+
+	UPDATE worldlifexpectancy_Cleaned
+	SET Status = 'Developed'
+	WHERE Status IS NULL
+	AND COUNTRY IN (SELECT COUNTRY FROM CTE_Developing_count);
+
+# Populating missing lifeecpectancy data based on other relevant data 
+	UPDATE worldlifexpectancy_Cleaned t1
+	JOIN  worldlifexpectancy_Cleaned t2
+		ON  t1.Country=t2.Country
+		AND t1.Year=t2.Year-1
+	JOIN  worldlifexpectancy_Cleaned t3
+		ON  t1.Country=t3.Country
+		AND t1.Year=t3.Year+1
+	SET t1.`Lifeexpectancy`= ROUND((t2.Lifeexpectancy + t3. Lifeexpectancy)/2,1)
+	WHERE t1.`Lifeexpectancy`='';
+    
+END $$
+DELIMITER ;
+
+#Calling Store Procedure 
+CALL Copy_and_Clean_Data();
+
+#Creating schedule for Automatic Data Cleaning
+CREATE EVENT run_data_cleaning
+	ON SCHEDULE EVERY 30 DAY
+    DO CALL Copy_and_Clean_Data();
+
+
+
+
+
+
+#Exploratory Data Analysis
+
+SELECT * FROM World_life_expectancy.worldlifexpectancy_Cleaned;
+select count(country)
+from  worldlifexpectancy_Cleaned;
+
+#COMAPRE LIFE EXPEPECTENCY OF DIFFERENT COUNTRIES IN 15 YEARS
+SELECT Country, MIN(Lifeexpectancy), MAX(Lifeexpectancy), 
+ROUND((MAX(Lifeexpectancy)-MIN(Lifeexpectancy)),1) AS Life_expectancy_in_15_yrs
+FROM worldlifexpectancy_Cleaned
+GROUP BY Country
+HAVING  MAX(Lifeexpectancy) <> 0
+AND  MAX(Lifeexpectancy) <> 0
+ORDER BY Life_expectancy_in_15_yrs DESC;
+
+# AVG YEAR THAT IS DONE REALLY WELL
+SELECT Year, round(AVG(Lifeexpectancy),2) AS Avg_Life
+FROM worldlifexpectancy_Cleaned
+GROUP BY Year;
+
+# Does increased in GDP has any correlation with life expectency?
+SELECT Country,ROUND(AVG(Lifeexpectancy),1) AS Avg_Life_exp, ROUND(AVG(GDP),1) AS Avg_GDP
+FROM worldlifexpectancy_Cleaned
+GROUP BY Country
+HAVING Avg_Life_exp >0
+AND Avg_GDP> 0
+ORDER BY Avg_GDP DESC;
+
+#HIGH GDP has High life expectency and LOW GDP has low life expectency. that's how..
+SELECT 
+SUM(CASE WHEN GDP>=1500 THEN 1 ELSE 0 END) High_GDP_count,
+ROUND(AVG(CASE WHEN GDP>=1500 THEN Lifeexpectancy ELSE NULL END),2) High_GDP_Life_exp,
+SUM(CASE WHEN GDP<=1500 THEN 1 ELSE 0 END) Low_GDP_count,
+ROUND(AVG(CASE WHEN GDP<=1500 THEN Lifeexpectancy ELSE NULL END),2) Low_GDP_Life_exp
+FROM worldlifexpectancy_Cleaned;
+
+#AVG Life expectancy btw devloping and develpoed countries
+SELECT Status,count(DISTINCT Country), 
+ROUND(AVG(Lifeexpectancy),1) AS Avg_Life_exp
+FROM worldlifexpectancy_Cleaned
+GROUP BY Status
+HAVING Avg_Life_exp >0;
+
+# Higher developing countries pay higher % expenditure and have high expectancy rate 
+SELECT  status, ROUND(AVG(Lifeexpectancy),1) AS Avg_Life_exp,
+ROUND(AVG(GDP),1) AS Avg_GDP,
+ROUND(AVG(percentageexpenditure),1) AS AVG_Percent_Health_sector_Expenditure
+FROM worldlifexpectancy_Cleaned
+GROUP BY status
+HAVING Avg_Life_exp >0
+AND Avg_GDP>0
+ORDER BY Avg_Life_exp DESC;
+
+
+# Developed country with lower mortality rate and higher life expectancy 
+SELECT  status, ROUND(AVG(Lifeexpectancy),1) AS Avg_Life_exp, 
+ROUND(AVG(AdultMortality),1) AS AVG_Mortality_rate
+FROM worldlifexpectancy_Cleaned
+GROUP BY status
+HAVING Avg_Life_exp >0
+AND AVG_Mortality_rate>0
+ORDER BY Avg_Life_exp DESC
